@@ -1,4 +1,67 @@
 import { errorHandling, telemetryData } from "./utils/middleware";
+export async function onRequest(context) {
+  const { request } = context;
+  const url = new URL(request.url);
+
+  // 处理 OPTIONS 请求
+  if (request.method === 'OPTIONS') {
+    return new Response(null, {
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+        'Access-Control-Max-Age': '86400', // 缓存时间，单位秒
+      },
+      status: 204, // No Content
+    });
+  }
+
+  // 处理 POST 请求（上传逻辑）
+  if (request.method === 'POST') {
+    try {
+      // 解析请求数据（如果你有上传逻辑）
+      const formData = await request.formData();
+      const file = formData.get('file'); // 假设文件字段名为 'file'
+
+      if (!file) {
+        return new Response(JSON.stringify({ error: 'No file uploaded' }), {
+          status: 400,
+          headers: {
+            'Access-Control-Allow-Origin': '*',
+            'Content-Type': 'application/json',
+          },
+        });
+      }
+
+      // 你的上传逻辑（可以是写入存储服务、返回文件 URL 等）
+      const fileUrl = `/uploads/${file.name}`;
+
+      return new Response(JSON.stringify({ message: 'File uploaded successfully', url: fileUrl }), {
+        status: 200,
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Content-Type': 'application/json',
+        },
+      });
+    } catch (error) {
+      return new Response(JSON.stringify({ error: 'File upload failed', details: error.message }), {
+        status: 500,
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Content-Type': 'application/json',
+        },
+      });
+    }
+  }
+
+  // 默认返回 405 (Method Not Allowed) 对于未定义的方法
+  return new Response('Method Not Allowed', {
+    status: 405,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+    },
+  });
+}
 
 function UnauthorizedException(reason) {
     return new Response(reason, {
