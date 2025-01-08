@@ -1,4 +1,5 @@
 import { errorHandling, telemetryData } from "./utils/middleware";
+
 function UnauthorizedException(reason) {
     return new Response(reason, {
         status: 401,
@@ -60,182 +61,171 @@ function authCheck(env, url, request) {
 }
 
 export async function onRequestPost(context) {
-  const { request, env, params, waitUntil, next, data } = context;
+  const { request, env } = context;
 
-  const url = new URL(request.url);
-  const clonedRequest = await request.clone();
+  try {
+    // 检查 OPTIONS 请求（CORS 预检请求）
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type, Authorization",
+        },
+      });
+    }
 
-  // 定义 CORS 响应生成函数
-  function createResponse(body, status = 200, additionalHeaders = {}) {
-    const corsHeaders = {
+    const url = new URL(request.url);
+    const clonedRequest = await request.clone();
+
+    // 鉴权
+    if (!authCheck(env, url, request)) {
+      return createErrorResponse("Unauthorized", 401);
+    }
+
+    // 获得上传 IP
+    const uploadIp =
+      request.headers.get("cf-connecting-ip") ||
+      request.headers.get("x-real-ip") ||
+      "unknown";
+
+    // 判断上传 IP 是否被封禁
+    const isBlockedIp = await isBlockedUploadIp(env, uploadIp);
+    if (isBlockedIp) {
+      return createErrorResponse("Your IP is blocked", 403);
+    }
+
+    // 检查 KV 数据库配置
+    if (!env.img_url) {
+      return createErrorResponse("Please configure KV database", 500);
+    }
+
+    // 获取上传文件信息
+    const formdata = await clonedRequest.formData();
+    const file = formdata.get("file");
+
+    // 检查文件的完整性
+    if (!file) {
+      return createErrorResponse("No file uploaded", 400);
+    }
+    const fileType = file.type || "unknown";
+    const fileName = file.name || "unknown";
+    const fileSize = (file.size / 1024 / 1024).toFixed(2); // 单位 MB
+
+    // 构建文件元数据
+    const time = Date.now();
+    const metadata = {
+      FileName: fileName,
+      FileType: fileType,
+      FileSize: fileSize,
+      UploadIP: uploadIp,
+      ListType: "None",
+      TimeStamp: time,
+    };
+
+    // 校验文件扩展名
+    let fileExt = fileName.split(".").pop();
+    if (!isExtValid(fileExt)) {
+      fileExt = fileType.split("/").pop() || "unknown";
+    }
+
+    // 构建文件 ID
+    const nameType = url.searchParams.get("uploadNameType") || "default";
+    const uniqueIndex = time + Math.floor(Math.random() * 10000);
+    let fullId = "";
+    if (nameType === "index") {
+      fullId = `${uniqueIndex}.${fileExt}`;
+    } else if (nameType === "origin") {
+      fullId = fileName || `${uniqueIndex}.${fileExt}`;
+    } else {
+      fullId = fileName ? `${uniqueIndex}_${fileName}` : `${uniqueIndex}.${fileExt}`;
+    }
+
+    // 构建返回链接
+    const returnFormat = url.searchParams.get("returnFormat") || "default";
+    const returnLink =
+      returnFormat === "full"
+        ? `${url.origin}/file/${fullId}`
+        : `/file/${fullId}`;
+
+    // 清除 CDN 缓存
+    const cdnUrl = `https://${url.hostname}/file/${fullId}`;
+    try {
+      await purgeCDNCache(env, cdnUrl, url);
+    } catch (error) {
+      console.error("CDN Cache Purge Error:", error);
+    }
+
+    // 处理上传逻辑
+    const uploadChannel = url.searchParams.get("uploadChannel") || "telegram";
+    const autoRetry = url.searchParams.get("autoRetry") !== "false"; // 默认开启自动重试
+    let res;
+    let err;
+
+    if (uploadChannel === "cfr2") {
+      // Cloudflare R2 渠道
+      res = await uploadFileToCloudflareR2(env, formdata, fullId, metadata, returnLink);
+      if (res.status !== 200 && autoRetry) {
+        err = await res.text();
+      }
+    } else {
+      // Telegram 渠道
+      res = await uploadFileToTelegram(env, formdata, fullId, metadata, fileExt, fileName, fileType, url, clonedRequest, returnLink);
+      if (res.status !== 200 && autoRetry) {
+        err = await res.text();
+      }
+    }
+
+    // 自动切换渠道重试
+    if (err) {
+      res = await tryRetry(err, env, uploadChannel, formdata, fullId, metadata, fileExt, fileName, fileType, url, clonedRequest, returnLink);
+    }
+
+    return res;
+  } catch (error) {
+    console.error("Worker Error:", error);
+    return createErrorResponse("Internal Server Error", 500);
+  }
+}
+
+// 辅助函数：创建错误响应
+function createErrorResponse(message, status) {
+  return new Response(JSON.stringify({ error: message }), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    };
-    const headers = { ...corsHeaders, ...additionalHeaders };
+    },
+  });
+}
 
-    return new Response(body, {
-      status,
-      headers,
-    });
-  }
 
-  // 处理 OPTIONS 请求
-  if (request.method === "OPTIONS") {
-    return createResponse(null, 204); // 成功预检，无响应体
-  }
-
-  // 模拟上传成功的响应（测试用例）
-  const responsePayload = { success: true, url: `/uploads/test-file.jpg` };
-
-  // 处理文件上传的逻辑
-  const formData = await request.formData();
-  const file = formData.get("file");
-
-  // 鉴权
-  if (!authCheck(env, url, request)) {
-    return createResponse("Unauthorized", 401); // 未授权
-  }
-
-  // 获得上传IP
-  const uploadIp =
-    request.headers.get("cf-connecting-ip") ||
-    request.headers.get("x-real-ip") ||
-    request.headers.get("x-forwarded-for") ||
-    "unknown";
-
-  // 判断上传 IP 是否被封禁
-  const isBlockedIp = await isBlockedUploadIp(env, uploadIp);
-  if (isBlockedIp) {
-    return createResponse("Error: Your IP is blocked", 403);
-  }
-
-  // 获得上传渠道
-  const urlParamUploadChannel = url.searchParams.get("uploadChannel");
-  let uploadChannel = "TelegramNew";
-  switch (urlParamUploadChannel) {
-    case "telegram":
-      uploadChannel = "TelegramNew";
-      break;
-    case "cfr2":
-      uploadChannel = "CloudflareR2";
-      break;
-    default:
-      uploadChannel = "TelegramNew";
-      break;
-  }
-
-  // 错误处理和遥测
-  await errorHandling(context);
-  telemetryData(context);
-
-  // img_url 未定义或为空的处理逻辑
-  if (!env.img_url) {
-    return createResponse("Error: Please configure KV database", 500);
-  }
-
-  // 获取文件信息
-  const time = new Date().getTime();
-  const fileType = file.type;
-  const fileName = file.name;
-  const fileSize = (file.size / 1024 / 1024).toFixed(2); // 文件大小，单位MB
-  const metadata = {
-    FileName: fileName,
-    FileType: fileType,
-    FileSize: fileSize,
-    UploadIP: uploadIp,
-    ListType: "None",
-    TimeStamp: time,
-  };
-
-  // 检查文件是否完整
-  if (!fileType || !fileName) {
-    return createResponse(
-      "Error: fileType or fileName is wrong, check the integrity of this file!",
-      400
-    );
-  }
-
-  let fileExt = fileName.split(".").pop(); // 文件扩展名
-  if (!isExtValid(fileExt)) {
-    // 如果文件名中没有扩展名，尝试从文件类型中获取
-    fileExt = fileType.split("/").pop();
-    if (!fileExt) {
-      fileExt = "unknown"; // 默认扩展名
+// 自动切换渠道重试
+async function tryRetry(err, env, uploadChannel, formdata, fullId, metadata, fileExt, fileName, fileType, url, clonedRequest, returnLink) {
+    // 渠道列表
+    const channelList = ['CloudflareR2', 'TelegramNew'];
+    const errMessages = {};
+    errMessages[uploadChannel] = 'Error: ' + uploadChannel + err;
+    for (let i = 0; i < channelList.length; i++) {
+        if (channelList[i] !== uploadChannel) {
+            let res = null;
+            if (channelList[i] === 'CloudflareR2') {
+                res = await uploadFileToCloudflareR2(env, formdata, fullId, metadata, returnLink);
+            } else if (channelList[i] === 'TelegramNew') {
+                res = await uploadFileToTelegram(env, formdata, fullId, metadata, fileExt, fileName, fileType, url, clonedRequest, returnLink);
+            }
+            if (res.status === 200) {
+                return res;
+            } else {
+                errMessages[channelList[i]] = 'Error: ' + channelList[i] + await res.text();
+            }
+        }
     }
-  }
 
-  // 构建文件 ID
-  const nameType = url.searchParams.get("uploadNameType") || "default"; // 获取命名方式
-  const unique_index = time + Math.floor(Math.random() * 10000);
-  let fullId = "";
-  if (nameType === "index") {
-    fullId = unique_index + "." + fileExt;
-  } else if (nameType === "origin") {
-    fullId = fileName || unique_index + "." + fileExt;
-  } else {
-    fullId = fileName ? unique_index + "_" + fileName : unique_index + "." + fileExt;
-  }
-
-  // 获取返回链接的格式
-  const returnFormat = url.searchParams.get("returnFormat") || "default";
-  let returnLink = "";
-  if (returnFormat === "full") {
-    returnLink = `${url.origin}/file/${fullId}`;
-  } else {
-    returnLink = `/file/${fullId}`;
-  }
-
-  // 清除 CDN 缓存
-  const cdnUrl = `https://${url.hostname}/file/${fullId}`;
-  await purgeCDNCache(env, cdnUrl, url);
-
-  // 上传到不同渠道
-  const autoRetry = url.searchParams.get("autoRetry") !== "false"; // 默认开启自动重试
-  let err = "";
-  if (uploadChannel === "CloudflareR2") {
-    const res = await uploadFileToCloudflareR2(env, formData, fullId, metadata, returnLink);
-    if (res.status === 200 || !autoRetry) {
-      return res;
-    } else {
-      err = await res.text();
-    }
-  } else {
-    const res = await uploadFileToTelegram(
-      env,
-      formData,
-      fullId,
-      metadata,
-      fileExt,
-      fileName,
-      fileType,
-      url,
-      clonedRequest,
-      returnLink
-    );
-    if (res.status === 200 || !autoRetry) {
-      return res;
-    } else {
-      err = await res.text();
-    }
-  }
-
-  // 上传失败，切换渠道重试
-  const res = await tryRetry(
-    err,
-    env,
-    uploadChannel,
-    formData,
-    fullId,
-    metadata,
-    fileExt,
-    fileName,
-    fileType,
-    url,
-    clonedRequest,
-    returnLink
-  );
-  return res;
+    return new Response(JSON.stringify(errMessages), { status: 500 });
 }
 
 
