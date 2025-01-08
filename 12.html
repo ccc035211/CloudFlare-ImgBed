@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>文件上传到 Sanyue ImgHub</title>
+  <script>
+    // 启用 CORS 调试的代码示例
+    async function uploadFile() {
+      const fileInput = document.getElementById('fileInput');
+      const file = fileInput.files[0];
+      const formData = new FormData();
+      formData.append('file', file);
+
+      try {
+        const response = await fetch('/upload?authcode=abc&serverCompress=true&uploadChannel=telegram&uploadNameType=default&autoRetry=true', {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const result = await response.json();
+        const filePath = result[0]?.src;
+        if (filePath) {
+          const fullUrl = `https://cloudflare-imgbed-84l.pages.dev${filePath}`;
+          document.getElementById('output').innerHTML = `<p>文件上传成功！<a href="${fullUrl}" target="_blank">${fullUrl}</a></p>`;
+        } else {
+          throw new Error('未能获取文件路径！');
+        }
+      } catch (error) {
+        console.error('上传错误:', error);
+        document.getElementById('output').innerHTML = `<p style="color: red;">上传失败：${error.message}</p>`;
+      }
+    }
+  </script>
+</head>
+<body>
+  <h1>上传文件到 Sanyue ImgHub</h1>
+  <form onsubmit="event.preventDefault(); uploadFile();">
+    <input type="file" id="fileInput" required>
+    <button type="submit">上传</button>
+  </form>
+  <div id="output"></div>
+</body>
+</html>

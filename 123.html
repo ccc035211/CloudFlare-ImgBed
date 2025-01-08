@@ -23,7 +23,7 @@
             const imageInput = document.getElementById('imageInput');
             formData.append('image', imageInput.files);
 
-            const apiUrl = 'https://img1.xczn.xyz/upload?authcode=abc&serverCompress=true&uploadChannel=telegram&uploadNameType=default&autoRetry=true'; // Replace with the correct API endpoint
+            const apiUrl = '/upload?authcode=abc&serverCompress=true&uploadChannel=telegram&uploadNameType=default&autoRetry=true'; // Replace with the correct API endpoint
             const response = await fetch(apiUrl, {
                 method: 'POST',
                 body: formData,
