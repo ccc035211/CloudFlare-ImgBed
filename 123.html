@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upload Image to Cloudflare-ImgBed</title>
+</head>
+<body>
+    <h1>Upload Image to Cloudflare-ImgBed</h1>
+    <form id="uploadForm" enctype="multipart/form-data">
+        <label for="imageInput">Choose an image:</label>
+        <input type="file" id="imageInput" name="image">
+        <button type="submit">Upload</button>
+    </form>
+
+    <div id="response"></div>
+
+    <script>
+        document.getElementById('uploadForm').addEventListener('submit', async function(event) {
+            event.preventDefault(); // Prevent the form from submitting the traditional way
+
+            const formData = new FormData();
+            const imageInput = document.getElementById('imageInput');
+            formData.append('image', imageInput.files);
+
+            const apiUrl = 'https://img1.xczn.xyz/upload?authcode=abc&serverCompress=true&uploadChannel=telegram&uploadNameType=default&autoRetry=true'; // Replace with the correct API endpoint
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                body: formData,
+            });
+
+            if (!response.ok) {
+                document.getElementById('response').innerText = `Error: ${response.statusText}`;
+                return;
+            }
+
+            const data = await response.json();
+            document.getElementById('response').innerText = `Upload successful! Image URL: ${data.url}`; // Adjust based on the actual response structure
+        });
+    </script>
+</body>
+</html>
