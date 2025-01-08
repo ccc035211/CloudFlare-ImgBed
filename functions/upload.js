@@ -1,5 +1,33 @@
 import { errorHandling, telemetryData } from "./utils/middleware";
 
+addEventListener('fetch', (event) => {
+  event.respondWith(handleRequest(event.request));
+});
+
+async function handleRequest(request) {
+  if (request.method === 'OPTIONS') {
+    // OPTIONS 请求处理
+    return new Response(null, {
+      status: 204,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      },
+    });
+  }
+
+  // 其他请求处理
+  const response = await fetch(request);
+  const newHeaders = new Headers(response.headers);
+  newHeaders.set('Access-Control-Allow-Origin', '*');
+  return new Response(response.body, {
+    ...response,
+    headers: newHeaders,
+  });
+}
+
+
 function UnauthorizedException(reason) {
     return new Response(reason, {
         status: 401,
